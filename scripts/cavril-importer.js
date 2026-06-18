@@ -179,28 +179,49 @@
     LAW_ENFORCEMENT: { color: '#ffe8b0', bright: 2, dim: 4 },
   };
 
+  // ─── FORGE ASSET URL RESOLVER ────────────────────────────────────────────────
+  // On The Forge, user-uploaded files live in the Forge asset library and need
+  // a full URL (ForgeVTT.ASSETS_LIBRARY_URL_PREFIX + relative path) to load.
+  // A bare relative path like "modules/cavril-cityhud/Assets" resolves to the
+  // module's static package files — but if Assets/ wasn't bundled in the zip,
+  // those requests 404. This function converts relative paths to full Forge URLs
+  // at the moment they are used, so the setting value can stay human-readable.
+  function _resolveAssetBase(base) {
+    if (!base) return base;
+    // Already an absolute URL — pass through unchanged.
+    if (/^https?:\/\//i.test(base)) return base;
+    // On Forge: prepend the asset library URL prefix.
+    if (typeof ForgeVTT !== 'undefined' && ForgeVTT.usingTheForge) {
+      const prefix = ForgeVTT.ASSETS_LIBRARY_URL_PREFIX || '';
+      // Strip any leading slash on base so we don't double-slash.
+      return prefix + base.replace(/^\//, '');
+    }
+    return base;
+  }
+
   // ─── TREE ASSETS ─────────────────────────────────────────────────────────────
   // Builder kept separate so the ready hook can rebuild after reading the
   // assetBase module setting (needed for Forge-hosted asset libraries).
   function _buildTreeAssets(base) {
+    const b = _resolveAssetBase(base);
     return {
       canopy: {
         broadleaf: {
-          large:  [1, 2, 3].map(n => `${base}/tree-broadleaf-large-green-${n}.png`),
-          medium: [1, 2, 3].map(n => `${base}/tree-broadleaf-medium-green-${n}.png`),
-          small:  [1, 2, 3].map(n => `${base}/tree-broadleaf-small-green-${n}.png`),
+          large:  [1, 2, 3].map(n => `${b}/tree-broadleaf-large-green-${n}.png`),
+          medium: [1, 2, 3].map(n => `${b}/tree-broadleaf-medium-green-${n}.png`),
+          small:  [1, 2, 3].map(n => `${b}/tree-broadleaf-small-green-${n}.png`),
         },
         coniferous: {
-          large: [1, 2, 3].map(n => `${base}/tree-coniferous-large-green-${n}.png`),
-          small: [1, 2, 3].map(n => `${base}/tree-coniferous-small-green-${n}.png`),
+          large: [1, 2, 3].map(n => `${b}/tree-coniferous-large-green-${n}.png`),
+          small: [1, 2, 3].map(n => `${b}/tree-coniferous-small-green-${n}.png`),
         },
         bare: {
-          large:  [`${base}/tree-bare-large.png`],
-          medium: [`${base}/tree-bare-medium.png`],
-          small:  [`${base}/tree-bare-small.png`],
+          large:  [`${b}/tree-bare-large.png`],
+          medium: [`${b}/tree-bare-medium.png`],
+          small:  [`${b}/tree-bare-small.png`],
         },
       },
-      trunk: [`${base}/tree-shade-small.png`],
+      trunk: [`${b}/tree-shade-small.png`],
     };
   }
 
@@ -3196,8 +3217,9 @@
         // Generate neutral (no baked tint) — applySeason regenerates with the
         // correct seasonal tint so texture trees always match tile tree tints.
         const _fTexDataURL = await generateForestTexture(0x4f726573, '#ffffff', false, _gridSizePx, _importPxPerFt);
-        await _uploadTex(_fTexDataURL, `${_texDir}/forest-canopy.png`);
-        _forestTexSrc = `${_texDir}/forest-canopy.png`;
+        await _uploadTex(_fTexDataURL, `${_texDir}/forest-canopy.png`);  // relative path for upload
+        // Resolve to a full URL on Forge so the Drawing's texture.src loads correctly.
+        _forestTexSrc = _resolveAssetBase(`${_texDir}/forest-canopy.png`);
       } catch (_texErr) {
         console.warn('[CavrilImport] Forest canopy texture upload failed — canopy overlay skipped:', _texErr.message);
       }
@@ -4157,9 +4179,10 @@
       // Use stored pxPerFt so texture circles match perimeter tree tile scale at import.
       const _fTexGridPx  = scene.grid?.size || 20;
       const _sSeasPxPerFt = scene.flags?.world?.cavrilPxPerFt || null;
-      const _fTexURL  = await generateForestTexture(0x4f726573, _fTint, isWinter, _fTexGridPx, _sSeasPxPerFt);
-      const _fTexPath = `worlds/${game.world?.id || 'world'}/cavril-gen/forest-canopy.png`;
-      await _uploadTex(_fTexURL, _fTexPath);
+      const _fTexURL     = await generateForestTexture(0x4f726573, _fTint, isWinter, _fTexGridPx, _sSeasPxPerFt);
+      const _fTexRelPath = `worlds/${game.world?.id || 'world'}/cavril-gen/forest-canopy.png`;
+      await _uploadTex(_fTexURL, _fTexRelPath);                // upload uses relative path
+      const _fTexPath    = _resolveAssetBase(_fTexRelPath);    // texture.src uses full URL on Forge
 
       // Update the texture src only — dot notation avoids Foundry V12's broken
       // object-form Drawing.update() path that can silently drop custom scaleX/Y.
