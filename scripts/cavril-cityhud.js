@@ -26524,6 +26524,155 @@ const __cityhudInit = () => {
   // world-scoped settings (NOT journal flags — flags mangled the
   // structure in v13). The outer key is journalId so multiple city
   // journals each get their own tag space without collisions.
+  // ─── ASSET PATH SETTINGS FORM ────────────────────────────────────────────────
+  // Opens from Module Settings → CityHUD → "Browse & Configure".
+  // Renders a FormApplication (V1 compat — works V11-V14) with FilePicker
+  // buttons so the GM can navigate to the correct Forge asset library folders
+  // rather than typing raw paths.
+  class CavrilAssetSettingsApp extends FormApplication {
+    static get defaultOptions() {
+      return foundry.utils.mergeObject(super.defaultOptions, {
+        id:            'cavril-asset-settings',
+        title:         'CityHUD — Asset Paths',
+        classes:       ['cavril-asset-settings-form'],
+        width:         500,
+        height:        'auto',
+        closeOnSubmit: true,
+        submitOnChange: false,
+      });
+    }
+
+    getData() {
+      return {
+        assetBase:      game.settings.get('cavril-cityhud', 'assetBase'),
+        portraitFolder: game.settings.get('cavril-cityhud', 'portraitFolder'),
+        portraitSource: game.settings.get('cavril-cityhud', 'portraitSource'),
+      };
+    }
+
+    // Return HTML directly — no external .hbs template required.
+    async _renderInner(data) {
+      const src = data.portraitSource || 'data';
+      const sourceOpts = [
+        ['data',          'Foundry user data'],
+        ['forgevtt',      'Forge Assets'],
+        ['forge-bazaar',  'Forge Bazaar'],
+        ['public',        'Foundry public'],
+        ['s3',            'Amazon S3'],
+      ].map(([v, l]) =>
+        `<option value="${v}"${src === v ? ' selected' : ''}>${l}</option>`
+      ).join('');
+
+      const field = (name, value, label, icon, iconColor, hint) => `
+        <div style="margin-bottom:14px;">
+          <label style="display:block;font-weight:600;color:#f4f4f5;margin-bottom:5px;font-size:0.85em;">
+            <i class="${icon}" style="color:${iconColor};margin-right:5px;"></i>${label}
+          </label>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <input type="text" name="${name}" value="${value || ''}"
+              style="flex:1;padding:7px 10px;background:#18181b;border:1px solid #3f3f46;
+                     color:#f4f4f5;border-radius:6px;font-size:0.85em;font-family:monospace;" />
+            <button type="button" data-fp="${name}"
+              title="Browse…"
+              style="padding:7px 11px;background:#3f3f46;border:1px solid #52525b;
+                     color:#d4d4d8;border-radius:6px;cursor:pointer;flex-shrink:0;">
+              <i class="fas fa-folder-open"></i>
+            </button>
+          </div>
+          <div style="font-size:0.74em;color:#71717a;margin-top:3px;line-height:1.4;">${hint}</div>
+        </div>`;
+
+      const html = `
+        <form autocomplete="off"
+          style="background:#09090b;color:#f4f4f5;font-family:system-ui,sans-serif;padding:0;">
+
+          <div style="padding:14px 16px 0;">
+            <div style="font-size:0.8em;color:#a1a1aa;background:#18181b;border:1px solid #3f3f46;
+                        border-radius:6px;padding:9px 12px;margin-bottom:16px;line-height:1.5;">
+              <strong style="color:#d4d4d8;">On The Forge:</strong> open your Forge asset library in
+              a browser tab, note the folder paths, then paste them here — or use the
+              <i class="fas fa-folder-open"></i> button to browse directly.
+              Set <em>File Source</em> to <strong>Forge Assets</strong> first so the picker
+              opens your Forge library.
+            </div>
+
+            <div style="margin-bottom:12px;">
+              <label style="display:block;font-weight:600;color:#f4f4f5;margin-bottom:5px;font-size:0.85em;">
+                <i class="fas fa-cloud-upload-alt" style="color:#60a5fa;margin-right:5px;"></i>File Source
+              </label>
+              <select name="portraitSource"
+                style="width:100%;padding:7px 10px;background:#18181b;border:1px solid #3f3f46;
+                       color:#f4f4f5;border-radius:6px;font-size:0.85em;">
+                ${sourceOpts}
+              </select>
+              <div style="font-size:0.74em;color:#71717a;margin-top:3px;">
+                Applies to both folder pickers below. Change this first, then use Browse to navigate.
+              </div>
+            </div>
+
+            <hr style="border:none;border-top:1px solid #27272a;margin:14px 0;" />
+
+            ${field(
+              'assetBase', data.assetBase,
+              'Asset Folder', 'fas fa-tree', '#a3e635',
+              'Folder containing tree-broadleaf-*.png, tree-coniferous-*.png, tree-bare-*.png, tree-shade-small.png'
+            )}
+            ${field(
+              'portraitFolder', data.portraitFolder,
+              'Portrait Folder', 'fas fa-user-circle', '#c084fc',
+              'Citizen portrait images for Auto-Portrait. Per-city setting in HUD → Settings overrides this when set.'
+            )}
+          </div>
+
+          <footer style="display:flex;justify-content:flex-end;gap:8px;
+                         padding:10px 16px;border-top:1px solid #27272a;margin-top:6px;">
+            <button type="button" class="cavril-cancel-btn"
+              style="padding:7px 16px;background:#27272a;border:1px solid #3f3f46;
+                     color:#d4d4d8;border-radius:6px;cursor:pointer;">
+              Cancel
+            </button>
+            <button type="submit"
+              style="padding:7px 18px;background:#7c3aed;border:none;color:#fff;
+                     border-radius:6px;cursor:pointer;font-weight:600;">
+              <i class="fas fa-save" style="margin-right:5px;"></i>Save
+            </button>
+          </footer>
+        </form>`;
+      return $(html);
+    }
+
+    activateListeners(html) {
+      super.activateListeners(html);
+
+      // Cancel button
+      html.find('.cavril-cancel-btn').on('click', () => this.close());
+
+      // Browse buttons — open a FilePicker navigating to the source/folder
+      // already in the text input, then write the selected folder back.
+      html.find('[data-fp]').on('click', ev => {
+        const target = ev.currentTarget.dataset.fp;
+        const input  = html.find(`[name="${target}"]`);
+        const source = html.find('[name="portraitSource"]').val() || 'data';
+        const FP     = foundry.applications?.apps?.FilePicker?.implementation ?? FilePicker;
+
+        const fp = new FP({
+          type:         'folder',
+          current:      input.val() || '',
+          activeSource: source,
+          callback:     path => { input.val(path); },
+        });
+        fp.render(true);
+      });
+    }
+
+    async _updateObject(_ev, formData) {
+      await game.settings.set('cavril-cityhud', 'assetBase',      formData.assetBase      || '');
+      await game.settings.set('cavril-cityhud', 'portraitFolder', formData.portraitFolder || '');
+      await game.settings.set('cavril-cityhud', 'portraitSource', formData.portraitSource || 'data');
+      ui.notifications.info('[CityHUD] Asset paths saved.');
+    }
+  }
+
   //
   // Idempotent: re-running this macro is safe; settings.register
   // throws if called twice, so we wrap in try/catch.
@@ -26618,6 +26767,18 @@ const __cityhudInit = () => {
         "s3":            "Amazon S3",
       },
       default: "data",
+    });
+  } catch (e) {}
+
+  // Register the settings menu button — opens CavrilAssetSettingsApp with folder pickers.
+  try {
+    game.settings.registerMenu("cavril-cityhud", "assetPathsMenu", {
+      name:       "Asset Paths",
+      label:      "Browse & Configure",
+      hint:       "Set Forge asset library paths for tree canopy art and citizen portraits.",
+      icon:       "fas fa-folder-open",
+      type:       CavrilAssetSettingsApp,
+      restricted: true,
     });
   } catch (e) {}
 
