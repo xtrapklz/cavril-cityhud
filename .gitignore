@@ -1,0 +1,16 @@
+# Large binary asset folders — host these on your Forge asset library instead
+Assets/
+Citizen Tokens 5e/
+Final Commoner Tokens/
+NPC/
+Tokens All/
+
+# Campaign-specific files
+*.png
+*.jpg
+*.jpeg
+*.webp
+CLAUDE.md
+
+# macOS junk
+.DS_Store

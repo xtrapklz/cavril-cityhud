@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Update module.json download URL for this release
+        run: |
+          jq --arg dl "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/module.zip" \
+             --arg v "${{ steps.version.outputs.VERSION }}" \
+             '.download = $dl | .version = $v' \
+             module.json > module.tmp.json && mv module.tmp.json module.json
+
+      - name: Bundle module zip
+        run: zip -r module.zip module.json scripts/
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: module.zip
+          generate_release_notes: true
