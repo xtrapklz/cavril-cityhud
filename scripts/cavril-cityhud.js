@@ -27477,6 +27477,26 @@ const __cityhudInit = () => {
     close() {
       try { app.close(); } catch (e) {}
     },
+    // ── Public proximity seam (Cavril: Wayfarer / EncounterStage pull a town's real NPCs near a point) ──
+    // Buildings whose centroid is within radiusFt of canvas point (x,y).
+    getBuildingsNear(x, y, radiusFt = 100) {
+      try { const { ids, dists } = app._computeProximityBldIds({ x, y }, radiusFt); return [...ids].map(id => ({ id, building: app.store.getBuilding(id), distFt: dists.get(id) })).filter(b => b.building); }
+      catch (e) { console.warn("[CityHUD] getBuildingsNear", e); return []; }
+    },
+    // Citizens physically present (schedule-aware) in those nearby buildings right now, de-duplicated.
+    getCitizensNear(x, y, radiusFt = 100, { cap = 0 } = {}) {
+      try {
+        const { ids } = app._computeProximityBldIds({ x, y }, radiusFt);
+        const seen = new Set(), out = [];
+        for (const bid of ids) for (const c of (app.store.getOccupantsNow(bid) || [])) { if (c?.id && !seen.has(c.id)) { seen.add(c.id); out.push(c); } }
+        return cap > 0 ? out.slice(0, cap) : out;
+      } catch (e) { console.warn("[CityHUD] getCitizensNear", e); return []; }
+    },
+    // Each nearby citizen + its dnd5e combat profile (Domain.Combat.profileFor) — ready to drop into a fight.
+    getCitizenProfilesNear(x, y, radiusFt = 100, opts = {}) {
+      try { return this.getCitizensNear(x, y, radiusFt, opts).map(c => ({ id: c.id, name: c.name, citizen: c, profile: app.store.getCombatProfile?.(c.id) || null })); }
+      catch (e) { console.warn("[CityHUD] getCitizenProfilesNear", e); return []; }
+    },
     get app() { return app; },
     // Exposed for debugging and advanced macros.
     Roads,
