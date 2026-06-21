@@ -27672,6 +27672,9 @@ const __cityhudInit = () => {
     Domain,
     Dresser,   // per-building CZEPEKU interiors: dressBuilding/dressAll/dressType/preview/stageInterior/playAmbience
   };
+  // Formalize the cross-module contract: other Cavril modules reach Cities via
+  // game.modules.get("cavril-cityhud").api (discoverable, version-gated) alongside window.CavrilCityHUD.
+  try { const _m = game.modules.get("cavril-cityhud"); if (_m) _m.api = window.CavrilCityHUD; } catch (e) { /* noop */ }
 
   // ── CityHUD deep-link plumbing ──────────────────────────────────────
   // Three surfaces inject "Open in CityHUD" affordances that route the
