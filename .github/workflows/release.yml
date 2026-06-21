@@ -18,9 +18,9 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
 
-      - name: Update module.json download URL for this release
+      - name: Stamp version + latest-download URL into module.json
         run: |
-          jq --arg dl "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/module.zip" \
+          jq --arg dl "https://github.com/${{ github.repository }}/releases/latest/download/module.zip" \
              --arg v "${{ steps.version.outputs.VERSION }}" \
              '.download = $dl | .version = $v' \
              module.json > module.tmp.json && mv module.tmp.json module.json
@@ -31,5 +31,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: module.zip
+          files: |
+            module.json
+            module.zip
           generate_release_notes: true

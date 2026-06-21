@@ -905,15 +905,27 @@ const __cityhudInit = () => {
       // be running an errand RIGHT NOW? Returns boolean. Hash is a
       // cheap xorshift — re-renders at the same time produce identical
       // results.
-      isShopping(citizenId, day, hour) {
+      isShopping(citizenId, day, hour, citizen) {
         if (hour < this.ERRAND_START_HOUR || hour >= this.ERRAND_END_HOUR) return false;
+        // OCEAN modulation: extroversion raises errand frequency (social
+        // citizens shop more), neuroticism lowers it (anxious citizens stay
+        // home), conscientiousness adds a small boost (purposeful errands).
+        // Citizen param is optional — falls back to flat ERRAND_RATE.
+        let rate = this.ERRAND_RATE;
+        if (citizen?.coreValues) {
+          let ov = citizen.coreValues;
+          rate += ((ov.extroversion      ?? 1) - 1) * 0.06;  // +0→+12%
+          rate -= ((ov.neuroticism       ?? 1) - 1) * 0.05;  // -0→-10%
+          rate += ((ov.conscientiousness ?? 1) - 1) * 0.03;  // +0→+6%
+          rate  = Math.max(0.05, Math.min(0.75, rate));
+        }
         let s = String(citizenId) + ":" + day + ":" + hour;
         let h = 2166136261 >>> 0;
         for (let i = 0; i < s.length; i++) {
           h ^= s.charCodeAt(i);
           h = Math.imul(h, 16777619) >>> 0;
         }
-        return ((h % 10000) / 10000) < this.ERRAND_RATE;
+        return ((h % 10000) / 10000) < rate;
       },
 
       // Which spot of the rotation is "today's". Rotates by day so a
@@ -7003,7 +7015,8 @@ const __cityhudInit = () => {
     // RIGHT NOW? Returns the patron building, or null if they're not
     // shopping at this hour (or have no patron shops available).
     getErrandSpot(citizenId, day, hour) {
-      if (!Domain.Errand.isShopping(citizenId, day, hour)) return null;
+      let c = this.getCitizen(citizenId);
+      if (!Domain.Errand.isShopping(citizenId, day, hour, c)) return null;
       let rotation = this.getErrandRotation(citizenId);
       let idx = Domain.Errand.getTodayIndex(rotation, day);
       return idx >= 0 ? rotation[idx].building : null;
@@ -7257,6 +7270,44 @@ const __cityhudInit = () => {
         let loc = this.getCurrentLocation(c.id);
         if (loc?.building && String(loc.building.id) === bid) out.push(c);
       }
+      return out;
+    }
+
+    // Citizens whose current errand rotation routes them to this building right
+    // now — i.e. they would be shopping here if they're out on an errand.
+    // Distinct from getOccupantsNow (which checks schedule-confirmed presence)
+    // and Regulars (which checks leisure rotation). This is the "who might be
+    // browsing the stalls" read for patron-type buildings.
+    // Performance: isShopping() is O(1) hash per citizen; results are cached
+    // per building per memo cycle so repeat inspector opens are instant.
+    getLikelyPatronsNow(buildingId, { cap = 24 } = {}) {
+      let b = this.getBuilding(buildingId);
+      let bType = String(b?.buildingType || "").toUpperCase().replace(/\s+/g, "_");
+      if (!Domain.Errand.PATRON_BLDG_TYPES.includes(bType)) return [];
+      let comps = game.time?.components || {};
+      let wtSecs = game?.time?.worldTime ?? 0;
+      let hour = comps.hour ?? Math.floor(((wtSecs % 86400) + 86400) % 86400 / 3600);
+      let day  = comps.dayOfWeek ?? comps.day ?? Math.floor(wtSecs / 86400) % 7;
+      if (hour < Domain.Errand.ERRAND_START_HOUR || hour >= Domain.Errand.ERRAND_END_HOUR) return [];
+
+      // Memo-keyed cache so we pay the full scan at most once per mutation.
+      if (!this._likelyPatronsCache) this._likelyPatronsCache = new Map();
+      let cacheKey = `${buildingId}:${day}:${hour}`;
+      let cached = this._likelyPatronsCache.get(cacheKey);
+      if (cached && cached.memo === this._memo) return cached.result;
+
+      let bid = String(buildingId);
+      let out = [];
+      for (let c of this.getCitizens()) {
+        if (out.length >= cap) break;
+        // Skip workers/residents — they show up in Occupants Now instead.
+        if (String(c.placeOfWork) === bid || String(c.placeOfResidence) === bid) continue;
+        if (!Domain.Errand.isShopping(c.id, day, hour, c)) continue;
+        let rotation = this.getErrandRotation(c.id);
+        let idx = Domain.Errand.getTodayIndex(rotation, day);
+        if (idx >= 0 && String(rotation[idx]?.building?.id) === bid) out.push(c);
+      }
+      this._likelyPatronsCache.set(cacheKey, { memo: this._memo, result: out });
       return out;
     }
 
@@ -9772,7 +9823,7 @@ const __cityhudInit = () => {
         background:rgba(0,0,0,0.50);
         z-index:9999;
         display:flex; align-items:center; justify-content:center;
-        font-family:'Inter', sans-serif;
+        font-family:'Signika', sans-serif;
       `;
       this._backdrop.addEventListener("click", (ev) => {
         if (ev.target === this._backdrop) this._resolve(null);
@@ -9780,13 +9831,14 @@ const __cityhudInit = () => {
 
       this._dialog = document.createElement("div");
       this._dialog.style.cssText = `
-        background:#18181b; color:#f4f4f5;
-        border:1px solid #3f3f46;
-        border-radius:12px;
+        background:#17181c; color:#f4f4f4;
+        border:1px solid rgba(0,0,0,.45);
+        border-radius:8px;
         padding:14px;
         width:420px; max-width:90vw; max-height:80vh;
         display:flex; flex-direction:column; gap:10px;
-        box-shadow:0 8px 32px rgba(0,0,0,0.5);
+        box-shadow:0 8px 32px rgba(0,0,0,.6);
+        font-family:'Signika',sans-serif;
       `;
 
       // Header
@@ -9794,7 +9846,7 @@ const __cityhudInit = () => {
       header.style.cssText = `display:flex; flex-direction:column; gap:3px;`;
       let titleEl = document.createElement("div");
       titleEl.textContent = this.title;
-      titleEl.style.cssText = `font-weight:600; font-size:1em; color:#f4f4f5;`;
+      titleEl.style.cssText = `font-weight:bold; font-size:1em; color:#f4f4f4; letter-spacing:.06em; text-transform:uppercase;`;
       header.appendChild(titleEl);
       if (this.summary) {
         let sum = document.createElement("div");
@@ -10009,7 +10061,7 @@ const __cityhudInit = () => {
         background:rgba(0,0,0,0.50);
         z-index:9999;
         display:flex; align-items:center; justify-content:center;
-        font-family:'Inter', sans-serif;
+        font-family:'Signika', sans-serif;
       `;
       this._backdrop.addEventListener("click", (ev) => {
         if (ev.target === this._backdrop) this._resolve(null);
@@ -10017,13 +10069,14 @@ const __cityhudInit = () => {
 
       this._dialog = document.createElement("div");
       this._dialog.style.cssText = `
-        background:#18181b; color:#f4f4f5;
-        border:1px solid #3f3f46;
-        border-radius:12px;
+        background:#17181c; color:#f4f4f4;
+        border:1px solid rgba(0,0,0,.45);
+        border-radius:8px;
         padding:14px;
         width:520px; max-width:90vw; max-height:80vh;
         display:flex; flex-direction:column; gap:10px;
-        box-shadow:0 8px 32px rgba(0,0,0,0.5);
+        box-shadow:0 8px 32px rgba(0,0,0,.6);
+        font-family:'Signika',sans-serif;
       `;
 
       // Header
@@ -10031,7 +10084,7 @@ const __cityhudInit = () => {
       header.style.cssText = `display:flex; flex-direction:column; gap:3px;`;
       let titleEl = document.createElement("div");
       titleEl.textContent = this.title;
-      titleEl.style.cssText = `font-weight:600; font-size:1em; color:#f4f4f5;`;
+      titleEl.style.cssText = `font-weight:bold; font-size:1em; color:#f4f4f4; letter-spacing:.06em; text-transform:uppercase;`;
       header.appendChild(titleEl);
       if (this.summary) {
         let sum = document.createElement("div");
@@ -15763,6 +15816,79 @@ const __cityhudInit = () => {
         console.warn("Regulars section failed:", e);
       }
 
+      // === Likely Patrons Now ===
+      // Citizens whose errand rotation routes them here at the current time.
+      // Only renders for patron-type buildings during errand hours (9-20).
+      // Distinct from Occupants Now (confirmed via schedule) — these are
+      // citizens who WOULD be shopping here based on their preferences.
+      try {
+        let likelyPatrons = this.store.getLikelyPatronsNow(this.buildingId);
+        if (likelyPatrons.length > 0) {
+          let lpHost = document.createElement("div");
+          lpHost.style.cssText = "display:flex; flex-direction:column; gap:6px;";
+
+          let lpHeader = document.createElement("div");
+          lpHeader.setAttribute("role", "button");
+          lpHeader.title = `Click to select all ${likelyPatrons.length} likely patrons in the left panel`;
+          lpHeader.style.cssText = "display:flex; align-items:center; gap:8px; font-size:0.72em; color:#9a9a9a; padding-bottom:4px; border-bottom:1px solid rgba(255,255,255,.07); cursor:pointer;";
+          lpHeader.innerHTML = `
+            <span><span style="color:#f4f4f4; font-weight:bold;">${likelyPatrons.length}</span> likely patron${likelyPatrons.length === 1 ? "" : "s"} right now</span>
+            <span style="color:rgba(255,255,255,.18);">·</span>
+            <span style="color:#9a9a9a; font-size:0.9em;">errand rotation match</span>
+            <i class="fas fa-check-double" style="margin-left:auto; opacity:0.5;"></i>
+          `;
+          lpHeader.addEventListener("mouseenter", () => { lpHeader.style.color = "#e0824d"; });
+          lpHeader.addEventListener("mouseleave", () => { lpHeader.style.color = "#9a9a9a"; });
+          lpHeader.addEventListener("click", () => {
+            let app = window.cityhud?.app;
+            if (!app) return;
+            app._listTab = "citizens";
+            app._selectedIds = new Set(likelyPatrons.map(c => String(c.id)));
+            app._listFilter = "";
+            app.render(true);
+            ui.notifications?.info(`Selected ${likelyPatrons.length} likely patron${likelyPatrons.length === 1 ? "" : "s"} in the left panel.`);
+          });
+          lpHost.appendChild(lpHeader);
+
+          let lpPills = document.createElement("div");
+          lpPills.style.cssText = "display:flex; flex-wrap:wrap; gap:5px;";
+          let curDay = game?.time?.components?.day ?? 0;
+          for (let cit of likelyPatrons) {
+            let pill = document.createElement("span");
+            pill.setAttribute("role", "button");
+            let hobby = cit.relaxingTrait || "";
+            pill.title = `${Domain.Citizen.displayName(cit)} — ${cit.jobTitle || "citizen"}${hobby ? " · " + hobby : ""} · click to inspect`;
+            pill.style.cssText = `
+              display:inline-flex; align-items:center; gap:5px;
+              padding:3px 9px;
+              background:rgba(224,130,77,.08);
+              border:1px solid rgba(224,130,77,.3);
+              border-radius:999px;
+              cursor:pointer; font-size:0.72em;
+            `;
+            pill.innerHTML = `
+              <i class="fas fa-shopping-bag" style="color:#e0824d; font-size:0.78em;"></i>
+              <span style="color:#f4f4f4;">${this._escapeHtml(Domain.Citizen.displayName(cit))}</span>
+              ${hobby ? `<span style="color:#9a9a9a; font-size:0.9em;">${this._escapeHtml(hobby)}</span>` : ""}
+            `;
+            pill.addEventListener("click", () => this.onCitizenClick?.(String(cit.id)));
+            lpPills.appendChild(pill);
+          }
+          lpHost.appendChild(lpPills);
+
+          let lpBlock = renderSectionBlock({
+            id: "building-likely-patrons",
+            title: "Likely Patrons Now",
+            icon: "fa-shopping-bag",
+            color: "#e0824d",
+            contentEl: lpHost
+          });
+          scroller.appendChild(lpBlock);
+        }
+      } catch (e) {
+        console.warn("[CityHUD] Likely Patrons section failed:", e);
+      }
+
       // === Building Schedule ===
       {
         let schedHost = document.createElement("div");
@@ -17147,6 +17273,81 @@ const __cityhudInit = () => {
         this.components.push(w);
       }
       header.appendChild(metricsRow);
+
+      // === OCEAN trait row: 5 rollable trait pills — shown below metrics.
+      // OCEAN drives hobby scoring, errand frequency, friend caps, and metric
+      // modulation but was never surfaced to the GM. Each pill shows the trait
+      // abbreviation, the 0–3 value, and pip dots. Clicking rolls 1d20 against
+      // DC = trait × 8 (0 → DC0 trivial, 3 → DC24 hard) and whispers to GM.
+      {
+        let _oceanCit = this.store.getCitizen(this.citizenId);
+        const OCEAN_DEF = [
+          { key: "openness",          abbr: "OPN", label: "Openness",          color: "#7fb2ff" },
+          { key: "conscientiousness", abbr: "CON", label: "Conscientiousness", color: "#69d77f" },
+          { key: "extroversion",      abbr: "EXT", label: "Extroversion",      color: "#f472b6" },
+          { key: "agreeableness",     abbr: "AGR", label: "Agreeableness",     color: "#ffd34d" },
+          { key: "neuroticism",       abbr: "NEU", label: "Neuroticism",       color: "#ff6b6b" },
+        ];
+        let _oceanVals = (_oceanCit?.coreValues || {});
+        let oceanRow = document.createElement("div");
+        oceanRow.style.cssText = `
+          grid-column:1 / -1;
+          display:grid; grid-template-columns:repeat(5, 1fr);
+          gap:5px;
+          padding-top:8px;
+          border-top:1px solid rgba(255,255,255,.07);
+          margin-top:2px;
+        `;
+        for (let t of OCEAN_DEF) {
+          let val = _oceanVals[t.key] ?? 1;
+          let pill = document.createElement("div");
+          pill.setAttribute("role", "button");
+          pill.title = `${t.label}: ${val}/3 — click to roll d20 (DC ${val * 8})`;
+          pill.style.cssText = `
+            display:flex; flex-direction:column; align-items:center;
+            padding:5px 4px 4px;
+            background:rgba(255,255,255,.03);
+            border:1px solid rgba(255,255,255,.07);
+            border-radius:6px;
+            cursor:pointer; gap:2px;
+          `;
+          let dots = [0,1,2].map(i =>
+            `<span style="font-size:8px; color:${i < val ? t.color : "rgba(255,255,255,.15)"}; line-height:1;">●</span>`
+          ).join("");
+          pill.innerHTML = `
+            <span style="font-size:9px; font-weight:bold; letter-spacing:.08em; color:${t.color}; text-transform:uppercase;">${t.abbr}</span>
+            <span style="font-size:16px; font-weight:bold; color:#f4f4f4; line-height:1;">${val}</span>
+            <span style="display:flex; gap:2px;">${dots}</span>
+          `;
+          pill.addEventListener("mouseenter", () => {
+            pill.style.background = "rgba(255,255,255,.07)";
+            pill.style.borderColor = t.color.replace(/^(#[0-9a-f]{6})$/i, (_, h) => h + "66");
+          });
+          pill.addEventListener("mouseleave", () => {
+            pill.style.background = "rgba(255,255,255,.03)";
+            pill.style.borderColor = "rgba(255,255,255,.07)";
+          });
+          pill.addEventListener("click", async () => {
+            try {
+              let dc = val * 8;
+              let r = await new Roll("1d20").evaluate();
+              let success = r.total >= dc;
+              let result = success
+                ? `<span style="color:#69d77f;font-weight:bold;">Success</span>`
+                : `<span style="color:#ff6b6b;font-weight:bold;">Failure</span>`;
+              let cName = _oceanCit ? Domain.Citizen.displayName(_oceanCit) : "Citizen";
+              ChatMessage.create({
+                content: `<b>${cName}</b> — ${t.label} check (DC ${dc}): rolled <b>${r.total}</b> — ${result}`,
+                speaker: ChatMessage.getSpeaker(),
+                whisper: ChatMessage.getWhisperRecipients("GM"),
+              });
+            } catch (e) { console.warn("[CityHUD] OCEAN roll failed:", e); }
+          });
+          oceanRow.appendChild(pill);
+        }
+        header.appendChild(oceanRow);
+      }
+
       scroller.appendChild(header);
 
       // === Tag panel ===
@@ -18260,7 +18461,7 @@ const __cityhudInit = () => {
           <div style="
             background:#0f0f10; color:#f4f4f5; padding:10px; margin:-8px;
             border-radius:6px;
-            font-family:'Inter','Helvetica Neue',sans-serif;
+            font-family:'Signika',sans-serif;
           ">
             <input id="bp-search" type="text" placeholder="Search by name or type…"
               style="width:100%; padding:6px 10px; background:#18181b; border:1px solid #3f3f46; border-radius:4px; color:#f4f4f5; font-size:0.85em; margin-bottom:8px; box-sizing:border-box;">
@@ -18346,7 +18547,7 @@ const __cityhudInit = () => {
           <div style="
             background:#0f0f10; color:#f4f4f5; padding:10px; margin:-8px;
             border-radius:6px;
-            font-family:'Inter','Helvetica Neue',sans-serif;
+            font-family:'Signika',sans-serif;
           ">
             <input id="te-input" type="text"
               value="${this._escapeHtml(current || "")}"
@@ -18436,7 +18637,7 @@ const __cityhudInit = () => {
         <div style="
           background:#0f0f10; color:#f4f4f5; padding:12px; margin:-8px;
           border-radius:6px;
-          font-family:'Inter','Helvetica Neue',sans-serif;
+          font-family:'Signika',sans-serif;
         ">
           <div style="font-size:0.78em; color:#a1a1aa; margin-bottom:10px; line-height:1.4;">
             Pick how this citizen behaves in combat. The choice is stored as a <code style="color:#67e8f9;">tactic:&lt;id&gt;</code> tag so it persists and shows up in tag-based filters.
@@ -18677,7 +18878,7 @@ const __cityhudInit = () => {
         <div style="
           background:#0f0f10; color:#f4f4f5; padding:14px; margin:-8px;
           border-radius:6px;
-          font-family:'Inter','Helvetica Neue',sans-serif;
+          font-family:'Signika',sans-serif;
         ">
           <div style="font-size:0.88em; margin-bottom:10px;">
             Rebuild <strong style="color:#86efac;">${this._escapeHtml(displayName)}</strong> from the
@@ -19140,7 +19341,7 @@ const __cityhudInit = () => {
           padding:14px;
           margin:-8px;
           border-radius:6px;
-          font-family:'Inter','Helvetica Neue',sans-serif;
+          font-family:'Signika',sans-serif;
         ">
           <div style="display:flex; flex-direction:column; gap:10px;">
             <div style="font-size:0.85em; color:#a1a1aa;">
@@ -19299,7 +19500,7 @@ const __cityhudInit = () => {
           padding:14px;
           margin:-8px;
           border-radius:6px;
-          font-family:'Inter','Helvetica Neue',sans-serif;
+          font-family:'Signika',sans-serif;
         ">
           <div style="display:flex; flex-direction:column; gap:0; max-height:60vh; overflow-y:auto;">
             <div style="font-size:0.78em; color:#a1a1aa; margin-bottom:10px;">
@@ -19904,7 +20105,7 @@ const __cityhudInit = () => {
           padding:14px;
           margin:-8px;
           border-radius:6px;
-          font-family:'Inter','Helvetica Neue',sans-serif;
+          font-family:'Signika',sans-serif;
         ">
           <div style="display:flex; flex-direction:column; gap:0; max-height:60vh; overflow-y:auto;">
             <div style="font-size:0.78em; color:#a1a1aa; margin-bottom:10px;">
@@ -20179,7 +20380,7 @@ const __cityhudInit = () => {
           padding:14px;
           margin:-8px;
           border-radius:6px;
-          font-family:'Inter','Helvetica Neue',sans-serif;
+          font-family:'Signika',sans-serif;
         ">
           <div style="display:flex; flex-direction:column; gap:12px; max-height:60vh;">
             <div style="font-size:0.78em; color:#a1a1aa;">
@@ -20465,7 +20666,7 @@ const __cityhudInit = () => {
           padding:14px;
           margin:-8px;
           border-radius:6px;
-          font-family:'Inter','Helvetica Neue',sans-serif;
+          font-family:'Signika',sans-serif;
         ">
           <div style="display:flex; flex-direction:column; gap:12px;">
             <div>
@@ -20852,7 +21053,7 @@ const __cityhudInit = () => {
            changed (no cursor-resets-to-zero glitch). */
         .cavril-v2-root [contenteditable][data-placeholder][data-empty="true"]:not(:focus)::before {
           content: attr(data-placeholder);
-          color: #52525b;
+          color: #9a9a9a;
           font-style: italic;
           pointer-events: none;
         }
@@ -20862,8 +21063,8 @@ const __cityhudInit = () => {
            feels "live" during drag without strobing on click. */
         .cavril-v2-root .v2-scrubbing {
           background: rgba(255,255,255,0.06) !important;
-          color: #f4f4f5 !important;
-          border-color: #71717a !important;
+          color: #e7ecf3 !important;
+          border-color: rgba(255,255,255,0.22) !important;
         }
         /* @-mention pill — soft blue with the citizen/building portrait
            or icon inline. contenteditable=false on the span itself makes
@@ -21020,7 +21221,7 @@ const __cityhudInit = () => {
       let candidates = diagnosis.candidates;
 
       if (candidates.length === 0) {
-        return $(`<div style="padding:24px; color:#fca5a5; font-family:'Inter',sans-serif; line-height:1.6;">
+        return $(`<div style="padding:24px; color:#fca5a5; font-family:'Signika',sans-serif; line-height:1.6;">
           <div style="font-weight:600; margin-bottom:8px;">No city journal found.</div>
           <div style="font-size:0.85em; color:#a1a1aa;">
             Looked for journals with a <code>flags.world.cityData</code> flag.
@@ -21213,8 +21414,8 @@ const __cityhudInit = () => {
         });
       }
 
-      let root = $(`<div class="cavril-v2-root" style="background:#18181b; color:#f4f4f5; font-family:'Inter',sans-serif; height:100%; box-sizing:border-box; display:flex; flex-direction:row; overflow:hidden;">
-        <div class="v2-left-pane" style="width:520px; flex:0 0 520px; display:flex; flex-direction:column; overflow:hidden; border-right:1px solid #27272a;"></div>
+      let root = $(`<div class="cavril-v2-root" style="background:#17181c; color:#f4f4f4; font-family:'Signika',sans-serif; height:100%; box-sizing:border-box; display:flex; flex-direction:row; overflow:hidden;">
+        <div class="v2-left-pane" style="width:520px; flex:0 0 520px; display:flex; flex-direction:column; overflow:hidden; border-right:1px solid rgba(255,255,255,.07);"></div>
         <div class="v2-right-pane" style="flex:1; display:flex; flex-direction:column; overflow:hidden;"></div>
       </div>`);
 
@@ -21270,6 +21471,8 @@ const __cityhudInit = () => {
       if (this._listSearchChips === undefined) this._listSearchChips = [];  // committed search chips (enter to add)
       if (this._listTab    === undefined) this._listTab    = "citizens";
       if (this._listSort   === undefined) this._listSort   = "name";
+      if (this._listBldgTypes   === undefined) this._listBldgTypes   = [];     // building type filter (empty = all)
+      if (this._listBldgOpenNow === undefined) this._listBldgOpenNow = false;  // only show currently open buildings
       if (this._listAge    === undefined) this._listAge    = "all";
       if (this._listGender === undefined) this._listGender = "all";
       if (this._listRace   === undefined) this._listRace   = "all";
@@ -21547,6 +21750,7 @@ const __cityhudInit = () => {
             </div>
           ` : ""}
           ${this._listTab === "citizens" ? this._renderFilterChipsHTML(allCitizens) : ""}
+          ${this._listTab === "buildings" ? this._renderBldgFilterChipsHTML(allBuildings) : ""}
           <div class="v2-citizen-list" style="flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:6px; padding-right:6px;"></div>
           ${this._listTab === "citizens" ? this._renderMassEditBarHTML() : ""}
           <div style="border-top:1px solid #27272a; padding-top:6px;">
@@ -21589,6 +21793,29 @@ const __cityhudInit = () => {
       html.find(".v2-proximity-btn").on("click", () => this._onProximityToggle());
       html.find(".v2-present-btn").on("click", () => this._onPresentToggle());
       html.find(".v2-viewport-btn").on("click", () => this._onViewportFilterToggle());
+
+      // Building type filter chips
+      html.find(".v2-bldg-type-chip").on("click", (ev) => {
+        let t = ev.currentTarget.dataset.btype;
+        if (!t) return;
+        let types = this._listBldgTypes || [];
+        let idx = types.indexOf(t);
+        if (idx >= 0) types.splice(idx, 1); else types.push(t);
+        this._listBldgTypes = types;
+        refreshList();
+        this.render(true);
+      });
+      html.find(".v2-bldg-open-now").on("click", () => {
+        this._listBldgOpenNow = !this._listBldgOpenNow;
+        refreshList();
+        this.render(true);
+      });
+      html.find(".v2-bldg-filter-clear").on("click", () => {
+        this._listBldgTypes = [];
+        this._listBldgOpenNow = false;
+        refreshList();
+        this.render(true);
+      });
 
       // Filter dropdowns — Age / Gender / Ancestry use native <select>.
       // The wrapper pill styling still changes color on active selection
@@ -23031,18 +23258,65 @@ const __cityhudInit = () => {
       let transitTaken = [];
       let transitMinDistPx = gs * 0.9;
       let transitMinDistSq = transitMinDistPx * transitMinDistPx;
+      // Current game minute — used for sub-hour transit progress.
+      let curMinuteFrac = Math.floor(((game?.time?.worldTime ?? 0) % 3600) / 60) / 60;
+
       for (let { citizen, targetBid } of transitCitizens) {
         let bd = bldgData.get(targetBid);
         if (!bd) { noBuilding.push(citizen); continue; }
         let rngTransit = Domain.RPCues._seed(`transit-pos-${citizen.id}-${curDay}-${curHour}`);
-        // 4 tiles (~ a city block) is a reasonable "on their way" radius.
-        // Try up to 16 candidate positions; reject any that would overlap
-        // an already-placed transit token or land in water.
+
+        // ── Route-progress positioning ─────────────────────────────────────
+        // Determine where the citizen is along their home→target path.
+        // progress ∈ [0,1]: 0 = just left origin, 1 = arrived at destination.
+        //
+        // Base progress = minute fraction within the current hour (so at 7:45
+        // a citizen is 75% through their transition hour).
+        // OCEAN modulation: high CON (purposeful) = further along; high AGR
+        // (chatty, stops to talk) = less far. The bias is ±0.2 at the extremes
+        // so minute-fraction always dominates — OCEAN is a flavour shift.
+        let ov = citizen.coreValues || {};
+        let oceanBias = ((ov.conscientiousness ?? 1) - 1) * 0.10
+                      - ((ov.agreeableness    ?? 1) - 1) * 0.08;
+        let progress = Math.max(0.05, Math.min(0.95, curMinuteFrac + oceanBias));
+
+        // Origin: if the target IS their work building they're going TO work
+        // (origin = home). If the target IS their home they're going FROM work.
+        // For all other targets (leisure, errand) treat home as origin.
+        let originBid = String(citizen.placeOfResidence || "");
+        if (String(citizen.placeOfWork || "") && String(targetBid) !== String(citizen.placeOfWork)) {
+          originBid = String(citizen.placeOfWork || "");
+        }
+        let originBd = bldgData.get(originBid);
+
+        // Compute the route midpoint. If both buildings are on-scene, lerp
+        // between their centroids. Otherwise fall back to the existing
+        // destination-centroid road pick.
+        let routeCenter = [bd.cx, bd.cy]; // default: near destination
+        if (originBd) {
+          routeCenter = [
+            originBd.cx + (bd.cx - originBd.cx) * progress,
+            originBd.cy + (bd.cy - originBd.cy) * progress,
+          ];
+        }
+
+        // Try up to 16 road candidate positions; prefer those nearest to
+        // the route midpoint, reject water + collisions.
         let pos = null;
-        for (let attempt = 0; attempt < 16; attempt++) {
-          let cand = this._pickTransitPositionNear([bd.cx, bd.cy], gs * 4, gs, rngTransit);
-          if (!cand) break;
-          // Reject positions inside water polygons.
+        // Gather road candidates centred on the route midpoint.
+        let roadCandidates = [];
+        for (let attempt = 0; attempt < 12; attempt++) {
+          let cand = this._pickTransitPositionNear(routeCenter, gs * 5, gs, rngTransit);
+          if (cand) roadCandidates.push(cand);
+        }
+        // Sort candidates by proximity to routeCenter so the spawn
+        // lands as close to the true route point as possible.
+        roadCandidates.sort((a, b) => {
+          let da = (a[0]-routeCenter[0])**2 + (a[1]-routeCenter[1])**2;
+          let db = (b[0]-routeCenter[0])**2 + (b[1]-routeCenter[1])**2;
+          return da - db;
+        });
+        for (let cand of roadCandidates) {
           let inWater = false;
           for (const wpoly of _spawnWaterPolys) {
             if (this._pip(cand[0], cand[1], wpoly)) { inWater = true; break; }
@@ -23055,6 +23329,25 @@ const __cityhudInit = () => {
           }
           if (!collides) { pos = cand; break; }
         }
+        // If no route-centred road position found, fall back to 4 more
+        // attempts near the destination (original behaviour).
+        if (!pos) {
+          for (let attempt = 0; attempt < 4; attempt++) {
+            let cand = this._pickTransitPositionNear([bd.cx, bd.cy], gs * 4, gs, rngTransit);
+            if (!cand) break;
+            let inWater = false;
+            for (const wpoly of _spawnWaterPolys) {
+              if (this._pip(cand[0], cand[1], wpoly)) { inWater = true; break; }
+            }
+            if (inWater) continue;
+            let collides = false;
+            for (let t of transitTaken) {
+              let dx = cand[0] - t[0], dy = cand[1] - t[1];
+              if (dx * dx + dy * dy < transitMinDistSq) { collides = true; break; }
+            }
+            if (!collides) { pos = cand; break; }
+          }
+        }
         if (!pos) {
           // No road nearby OR all candidates collided — degrade to inside-building.
           transitFell++;
@@ -23065,8 +23358,10 @@ const __cityhudInit = () => {
         transitTaken.push(pos);
         transitPlaced++;
         const { actor: actorForCitizen, src: transitSrc } = resolveToken(citizen);
-        // Face toward the destination building centroid so transit
-        // citizens visually walk in the right direction.
+        // Face toward the destination centroid (progress < 0.5) or back
+        // toward origin (if past the halfway point, rare but plausible for
+        // returning errands). In practice always faces destination since
+        // transit is directional.
         let transitRot = _faceRotation(pos[0], pos[1], bd.cx, bd.cy);
         // pos is a centerpoint; convert to top-left then snap to grid.
         const transitSnapped = _snapTokenPos(pos[0] - gs / 2, pos[1] - gs / 2);
@@ -24837,6 +25132,76 @@ const __cityhudInit = () => {
       } catch (e) { /* never let a pan event break the HUD */ }
     }
 
+    // Building tab filter bar — type chips + open-now toggle.
+    // Mirrors the citizen filter chips pattern but for buildings.
+    _renderBldgFilterChipsHTML(allBuildings) {
+      const BLDG_TYPE_META = [
+        { type: "TAVERN",         label: "Tavern",      color: "#f472b6" },
+        { type: "INN",            label: "Inn",         color: "#fb923c" },
+        { type: "MARKET",         label: "Market",      color: "#fbbf24" },
+        { type: "SHOP",           label: "Shop",        color: "#34d399" },
+        { type: "ARTISAN",        label: "Artisan",     color: "#22d3ee" },
+        { type: "RESIDENCE",      label: "Residence",   color: "#7fb2ff" },
+        { type: "RELIGIOUS",      label: "Religious",   color: "#a78bfa" },
+        { type: "EDUCATIONAL",    label: "Education",   color: "#bda9e8" },
+        { type: "FACTION",        label: "Faction",     color: "#f87171" },
+        { type: "INDUSTRIAL",     label: "Industrial",  color: "#9ca3af" },
+        { type: "SERVICE",        label: "Service",     color: "#86efac" },
+        { type: "FARM",           label: "Farm",        color: "#a3e635" },
+        { type: "LAW_ENFORCEMENT",label: "Law",         color: "#fca5a5" },
+        { type: "WAREHOUSE",      label: "Warehouse",   color: "#71717a" },
+      ];
+      // Count buildings per type so GMs can see which type chips have results.
+      let typeCounts = new Map();
+      for (let b of allBuildings) {
+        let t = String(b.buildingType || "").toUpperCase().replace(/\s+/g, "_");
+        typeCounts.set(t, (typeCounts.get(t) || 0) + 1);
+      }
+      let active = new Set((this._listBldgTypes || []).map(t => t.toUpperCase()));
+
+      // Current hour for open-now logic
+      let curHr = game?.time?.components?.hour ?? -1;
+
+      let typeChips = BLDG_TYPE_META
+        .filter(m => (typeCounts.get(m.type) || 0) > 0)
+        .map(m => {
+          let on = active.has(m.type);
+          let count = typeCounts.get(m.type) || 0;
+          return `<span role="button" class="v2-bldg-type-chip" data-btype="${m.type}" style="
+            padding:3px 9px; border-radius:999px; cursor:pointer;
+            background:${on ? "rgba(255,255,255,.10)" : "rgba(0,0,0,0.20)"};
+            border:1px solid ${on ? m.color + "88" : "rgba(255,255,255,.12)"};
+            color:${on ? m.color : "#9a9a9a"};
+            font-size:0.7em; font-weight:${on ? "bold" : "500"};
+            display:inline-flex; align-items:center; gap:3px;
+          ">${this._escapeHtml(m.label)}<span style="color:${on ? m.color + "aa" : "#52525b"}; font-variant-numeric:tabular-nums;">${count}</span></span>`;
+        }).join("");
+
+      let openNowOn = !!this._listBldgOpenNow;
+      let openChip = `<span role="button" class="v2-bldg-open-now" style="
+        padding:3px 9px; border-radius:999px; cursor:pointer;
+        background:${openNowOn ? "rgba(105,215,127,.14)" : "rgba(0,0,0,0.20)"};
+        border:1px solid ${openNowOn ? "rgba(105,215,127,.5)" : "rgba(255,255,255,.12)"};
+        color:${openNowOn ? "#69d77f" : "#9a9a9a"};
+        font-size:0.7em; font-weight:${openNowOn ? "bold" : "500"};
+        display:inline-flex; align-items:center; gap:4px;
+      "><i class="fas fa-door-open"></i>Open Now</span>`;
+
+      let clearChip = (active.size > 0 || openNowOn) ? `<span role="button" class="v2-bldg-filter-clear" style="
+        padding:3px 9px; border-radius:999px; cursor:pointer;
+        background:rgba(0,0,0,0.20); border:1px solid rgba(255,255,255,.12); color:#9a9a9a;
+        font-size:0.7em; display:inline-flex; align-items:center; gap:3px;
+      "><i class="fas fa-times" style="font-size:0.85em;"></i>Clear</span>` : "";
+
+      if (!typeChips && !clearChip) return "";
+      return `<div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap; padding:2px 0;">
+        <span style="font-size:0.6em; color:#52525b; text-transform:uppercase; letter-spacing:0.5px; flex:0 0 auto;">Type</span>
+        ${typeChips}
+        ${openChip}
+        ${clearChip}
+      </div>`;
+    }
+
     _renderFilterChipsHTML(allCitizens) {
       // ── Native dropdown for single-value categorical filters ─────
       // Age / Gender / Ancestry use a native <select> instead of the
@@ -25623,6 +25988,29 @@ const __cityhudInit = () => {
           return true;
         });
       }
+      // Building type filter chips
+      let activeTypes = (this._listBldgTypes || []);
+      if (activeTypes.length > 0) {
+        let typeSet = new Set(activeTypes.map(t => t.toUpperCase().replace(/\s+/g, "_")));
+        filtered = filtered.filter(b => {
+          let t = String(b.buildingType || "").toUpperCase().replace(/\s+/g, "_");
+          return typeSet.has(t);
+        });
+      }
+      // Open Now filter — only show buildings open at current game hour
+      if (this._listBldgOpenNow) {
+        let comps = game?.time?.components || {};
+        let wtSecs = game?.time?.worldTime ?? 0;
+        let curHr = comps.hour ?? Math.floor(((wtSecs % 86400) + 86400) % 86400 / 3600);
+        let curDay = comps.dayOfWeek ?? comps.day ?? Math.floor(wtSecs / 86400) % 7;
+        filtered = filtered.filter(b => {
+          let ot = b.openingTimes || {};
+          let oH = ot.openHour ?? 9;
+          let cH = ot.closeHour ?? 17;
+          let closed = new Set(ot.closedDays || []);
+          return !closed.has(curDay) && curHr >= oH && curHr < cH;
+        });
+      }
       // Proximity filter + distance sort for buildings
       if ((this._proximityRadius || 0) > 0 && this._proximityBldIds) {
         filtered = filtered.filter(b => this._proximityBldIds.has(String(b.id)));
@@ -25632,8 +26020,9 @@ const __cityhudInit = () => {
         }
       }
       let displayed = filtered.slice(0, MAX_ROWS);
+      let hasFilter = !!(this._listFilter || (this._listSearchChips||[]).length || activeTypes.length || this._listBldgOpenNow);
 
-      countEl.textContent = this._listFilter
+      countEl.textContent = hasFilter
         ? `${displayed.length} / ${filtered.length} (of ${allBuildings.length})`
         : `showing ${displayed.length} of ${allBuildings.length}`;
 
@@ -26770,6 +27159,28 @@ const __cityhudInit = () => {
     });
   } catch (e) {}
 
+  const _TEX_SETTINGS = [
+    ["texGrass",  "Terrain Texture: Grass / Meadow",   "B&W tileable texture for grass, meadow, pasture, and forest floor polygons. Leave blank to use a flat colour fill instead."],
+    ["texDirt",   "Terrain Texture: Dirt / Farm",       "B&W tileable texture for dirt, sand, farmland, and crop field polygons."],
+    ["texWater",  "Terrain Texture: Water",             "B&W tileable texture for river, lake, and waterfront polygons."],
+    ["texForest", "Terrain Texture: Forest Floor",      "B&W tileable texture for the forest base layer (currently uses Grass if left blank)."],
+    ["texStone",  "Terrain Texture: Stone / Cobble",    "B&W tileable texture for stone, cobblestone, and paved surface polygons."],
+    ["texMarsh",  "Terrain Texture: Marsh / Swamp",     "B&W tileable texture for marsh and swamp polygons."],
+    ["texRoof",   "Terrain Texture: Roof",              "B&W tileable texture used for building roof fills and aqueduct surfaces."],
+  ];
+  for (const [key, name, hint] of _TEX_SETTINGS) {
+    try {
+      game.settings.register("cavril-cityhud", key, {
+        name: "CityHUD: " + name,
+        hint,
+        scope:  "world",
+        config: true,
+        type:   String,
+        default: "",
+      });
+    } catch (e) {}
+  }
+
   // Register the settings menu button — opens CavrilAssetSettingsApp with folder pickers.
   try {
     game.settings.registerMenu("cavril-cityhud", "assetPathsMenu", {
@@ -26793,45 +27204,187 @@ const __cityhudInit = () => {
   //
   // Idempotent guard: don't re-inject if already present (re-running
   // the macro would otherwise stack duplicate <style> tags).
-  if (!document.getElementById("cityhud-dialog-theme")) {
-    let styleEl = document.createElement("style");
-    styleEl.id = "cityhud-dialog-theme";
-    styleEl.textContent = `
+  if (!document.getElementById("cityhud-design-system")) {
+    const _ds = document.createElement("style");
+    _ds.id = "cityhud-design-system";
+    _ds.textContent = `
+      /* ── CAVRIL CITYHUD DESIGN SYSTEM — aligned with DDB Roll Cards ──────────── */
+
+      /* ── Window chrome ───────────────────────────────────────────────────────── */
+      #cavril-cityhud-v2.app {
+        border: 1px solid rgba(0,0,0,.45) !important;
+        border-radius: 8px !important;
+        box-shadow: 0 8px 32px rgba(0,0,0,.6) !important;
+        overflow: hidden !important;
+      }
+      #cavril-cityhud-v2 .window-header {
+        background: linear-gradient(90deg, #222226, #34343a) !important;
+        border-bottom: 1px solid rgba(255,255,255,.07) !important;
+        font-family: 'Signika', sans-serif !important;
+        padding: 6px 10px !important;
+      }
+      #cavril-cityhud-v2 .window-header .window-title {
+        color: #f4f4f4 !important;
+        font-weight: bold !important;
+        font-size: 12px !important;
+        letter-spacing: .08em !important;
+        text-transform: uppercase !important;
+      }
+      #cavril-cityhud-v2 .window-header a.header-button {
+        color: #9a9a9a !important;
+        transition: color 0.12s !important;
+      }
+      #cavril-cityhud-v2 .window-header a.header-button:hover {
+        color: #e0824d !important;
+      }
+      #cavril-cityhud-v2 .window-content {
+        padding: 0 !important;
+        background: #17181c !important;
+      }
+
+      /* ── Root layout ─────────────────────────────────────────────────────────── */
+      #cavril-cityhud-v2 .cavril-v2-root {
+        background: #17181c !important;
+        color: #f4f4f4 !important;
+        font-family: 'Signika', sans-serif !important;
+      }
+      #cavril-cityhud-v2 .v2-left-pane {
+        background: #17181c !important;
+        border-right: 1px solid rgba(255,255,255,.07) !important;
+      }
+      #cavril-cityhud-v2 .v2-right-pane {
+        background: #17181c !important;
+      }
+
+      /* ── Tab navigation ──────────────────────────────────────────────────────── */
+      #cavril-cityhud-v2 .v2-tab-btn {
+        font-family: 'Signika', sans-serif !important;
+        font-size: 10px !important;
+        font-weight: bold !important;
+        letter-spacing: .08em !important;
+        text-transform: uppercase !important;
+        border-radius: 8px !important;
+        transition: background 0.1s, border-color 0.1s, color 0.1s !important;
+      }
+
+      /* ── Citizen list rows ───────────────────────────────────────────────────── */
+      #cavril-cityhud-v2 .v2-citizen-row {
+        background: rgba(255,255,255,.03) !important;
+        border: 1px solid rgba(255,255,255,.07) !important;
+        border-radius: 6px !important;
+        transition: background 0.1s !important;
+      }
+      #cavril-cityhud-v2 .v2-citizen-row:hover {
+        background: rgba(255,255,255,.07) !important;
+        border-color: rgba(255,255,255,.14) !important;
+      }
+
+      /* ── Search input ────────────────────────────────────────────────────────── */
+      #cavril-cityhud-v2 .v2-list-search {
+        background: #222 !important;
+        border: 1px solid rgba(255,255,255,.25) !important;
+        color: #f4f4f4 !important;
+        font-family: 'Signika', sans-serif !important;
+        border-radius: 4px !important;
+      }
+      #cavril-cityhud-v2 .v2-list-search:focus {
+        border-color: rgba(224,130,77,.5) !important;
+        outline: none !important;
+      }
+      #cavril-cityhud-v2 .v2-list-search::placeholder {
+        color: #9a9a9a !important;
+      }
+
+      /* ── Inspector chrome ────────────────────────────────────────────────────── */
+      #cavril-cityhud-v2 .v2-inspector-header {
+        background: linear-gradient(90deg, #222226, #2a2a30) !important;
+        border-bottom: 1px solid rgba(255,255,255,.07) !important;
+      }
+      #cavril-cityhud-v2 .v2-inspector-image {
+        border: 1px solid rgba(0,0,0,.45) !important;
+        border-radius: 6px !important;
+        transition: border-color 0.12s !important;
+      }
+      #cavril-cityhud-v2 .v2-inspector-image:hover {
+        border-color: rgba(224,130,77,.5) !important;
+      }
+      #cavril-cityhud-v2 .v2-bldg-image {
+        border: 1px solid rgba(0,0,0,.45) !important;
+        border-radius: 6px !important;
+        transition: border-color 0.12s !important;
+      }
+      #cavril-cityhud-v2 .v2-bldg-image:hover {
+        border-color: rgba(224,130,77,.5) !important;
+      }
+
+      /* ── Form controls (global within HUD) ───────────────────────────────────── */
+      #cavril-cityhud-v2 input[type="text"],
+      #cavril-cityhud-v2 input[type="number"],
+      #cavril-cityhud-v2 select,
+      #cavril-cityhud-v2 textarea {
+        font-family: 'Signika', sans-serif !important;
+        background: #222 !important;
+        border-color: rgba(255,255,255,.25) !important;
+        color: #f4f4f4 !important;
+        border-radius: 4px !important;
+      }
+      #cavril-cityhud-v2 input:focus,
+      #cavril-cityhud-v2 select:focus,
+      #cavril-cityhud-v2 textarea:focus {
+        border-color: rgba(224,130,77,.5) !important;
+        outline: none !important;
+      }
+
+      /* ── Scrollbars ───────────────────────────────────────────────────────────── */
+      #cavril-cityhud-v2 ::-webkit-scrollbar { width: 4px; height: 4px; }
+      #cavril-cityhud-v2 ::-webkit-scrollbar-track { background: transparent; }
+      #cavril-cityhud-v2 ::-webkit-scrollbar-thumb {
+        background: rgba(255,255,255,.12);
+        border-radius: 2px;
+      }
+      #cavril-cityhud-v2 ::-webkit-scrollbar-thumb:hover {
+        background: rgba(224,130,77,.5);
+      }
+
+      /* ── Dark dialog theme (spawned Dialogs from CityHUD actions) ────────────── */
       .cityhud-dark-dialog .window-header {
-        background: #0f0f10 !important;
-        color: #f4f4f5 !important;
-        border-bottom: 1px solid #27272a !important;
+        background: linear-gradient(90deg, #222226, #34343a) !important;
+        color: #f4f4f4 !important;
+        border-bottom: 1px solid rgba(255,255,255,.07) !important;
+        font-family: 'Signika', sans-serif !important;
       }
       .cityhud-dark-dialog .window-header .window-title,
       .cityhud-dark-dialog .window-header a {
-        color: #f4f4f5 !important;
+        color: #f4f4f4 !important;
+        font-family: 'Signika', sans-serif !important;
       }
       .cityhud-dark-dialog .window-content {
-        background: #0f0f10 !important;
-        color: #f4f4f5 !important;
+        background: #17181c !important;
+        color: #f4f4f4 !important;
         padding: 0 !important;
+        font-family: 'Signika', sans-serif !important;
       }
       .cityhud-dark-dialog .dialog-content {
-        background: #0f0f10 !important;
-        color: #f4f4f5 !important;
+        background: #17181c !important;
+        color: #f4f4f4 !important;
         padding: 8px !important;
       }
       .cityhud-dark-dialog .dialog-buttons {
-        background: #0f0f10 !important;
-        border-top: 1px solid #27272a !important;
+        background: #17181c !important;
+        border-top: 1px solid rgba(255,255,255,.07) !important;
         padding: 8px !important;
         gap: 6px;
       }
       .cityhud-dark-dialog .dialog-buttons button {
-        background: #18181b !important;
-        color: #f4f4f5 !important;
-        border: 1px solid #3f3f46 !important;
-        border-radius: 6px !important;
-        transition: background 0.1s ease-out, border-color 0.1s ease-out;
+        background: rgba(255,255,255,.06) !important;
+        color: #f4f4f4 !important;
+        border: 1px solid rgba(255,255,255,.18) !important;
+        border-radius: 4px !important;
+        font-family: 'Signika', sans-serif !important;
+        transition: background 0.1s, border-color 0.1s;
       }
       .cityhud-dark-dialog .dialog-buttons button:hover {
-        background: #27272a !important;
-        border-color: #52525b !important;
+        background: rgba(255,255,255,.14) !important;
         text-shadow: none;
       }
       .cityhud-dark-dialog input[type="text"]:focus,
@@ -26839,11 +27392,10 @@ const __cityhudInit = () => {
       .cityhud-dark-dialog select:focus,
       .cityhud-dark-dialog textarea:focus {
         outline: none;
-        border-color: #818cf8 !important;
-        box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.18);
+        border-color: rgba(224,130,77,.5) !important;
       }
     `;
-    document.head.appendChild(styleEl);
+    document.head.appendChild(_ds);
   }
 
   // ── Module entry points ─────────────────────────────────────────
@@ -28070,8 +28622,7 @@ const __cityhudInit = () => {
     });
   }
 
-  // Debounce guard: Foundry V12 can call both onClick AND onChange for the
-  // same click on a button tool, which would double-toggle and cancel out.
+  // Debounce guard: safety net against accidental rapid double-fire.
   let _bldgOverlayLastToggle = 0;
   function _cavrilToggleBldgOverlay() {
     const now = Date.now();
@@ -28500,20 +29051,18 @@ Hooks.on("getSceneControlButtons", (...args) => {
     icon: "fas fa-city",
     visible: isGM,
     button: true,
-    onClick:  ()                => window.CavrilCityHUD?.open?.(),
     onChange: (_event, _active) => window.CavrilCityHUD?.open?.()
   };
 
   // ── Building type overlay toggle ────────────────────────────────
-  // NOTE: button:true (not toggle:true) — toggle tools in V12 fire BOTH
-  // onClick AND onChange, causing a double-call that cancels the toggle.
+  // button:true so V13 only fires onChange (toggle:true fired both onClick
+  // AND onChange in V12, causing a double-call that cancelled the toggle).
   const bldgOverlayEntry = {
     name: "cavril-bldg-overlay",
     title: "Building Overlay — toggle type icons on every building",
     icon: "fas fa-map-pin",
     visible: isGM,
     button: true,
-    onClick:  ()                => window.CavrilCityHUD?.toggleBldgOverlay?.(),
     onChange: (_event, _active) => window.CavrilCityHUD?.toggleBldgOverlay?.()
   };
 
@@ -28524,7 +29073,6 @@ Hooks.on("getSceneControlButtons", (...args) => {
     icon: "fas fa-users-viewfinder",
     visible: isGM,
     button: true,
-    onClick:  ()                => window.CavrilCityHUD?.openNearbyPanel?.(),
     onChange: (_event, _active) => window.CavrilCityHUD?.openNearbyPanel?.()
   };
 

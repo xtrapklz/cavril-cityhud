@@ -248,21 +248,34 @@
   const GRASSLAND_TYPES = new Set(['GRASS', 'MEADOW', 'PASTURE', 'LAWN_TEXTURE_TYPE']);
 
   // ─── TERRAIN TEXTURES ────────────────────────────────────────────────────────
-  // B&W textures that get tinted by fillColor at render time.
-  // All paths are relative to Foundry's public/ folder (app static files).
-  // Files marked (NEEDED) must be created by the user — see CLAUDE.md for the list.
-  // B&W texture paths — all relative to Foundry's public/ root.
-  // fillType:2 (PATTERN) tiles the texture; fillColor acts as a multiply tint on the B&W image.
-  const _TEX = {
-    GRASS:       'ui/tiles/grass_bw.jpg',
-    DIRT:        'ui/tiles/dirt_bw.jpg',
-    WATER:       'ui/tiles/water_bw.jpg',
-    FOREST:      'ui/tiles/forest_floor_bw.jpg',
-    STONE:       'ui/tiles/stone_bw.jpg',
-    MARSH:       'ui/tiles/marsh_bw.jpg',
-    ROOF:        'ui/tiles/roof_bw.jpg',
+  // B&W textures tinted by fillColor at render time (fillType:2 = PATTERN multiply).
+  // Paths default to empty so imports use flat colour fills until the GM sets
+  // real texture paths in Module Settings → CityHUD: Terrain Texture: *.
+  // Overridden from game.settings at ready + whenever a setting changes.
+  let _TEX = {
+    GRASS:  '',
+    DIRT:   '',
+    WATER:  '',
+    FOREST: '',
+    STONE:  '',
+    MARSH:  '',
+    ROOF:   '',
   };
-  const TERRAIN_TEXTURES = {
+
+  // Bucket map: TERRAIN_TEXTURES key → _TEX key.  Kept out of the main map so
+  // _rebuildTexPaths() can re-derive every entry without duplicating the list.
+  const _TEX_BUCKET = {
+    GRASS:'GRASS', MEADOW:'GRASS', PASTURE:'GRASS', LAWN_TEXTURE_TYPE:'GRASS',
+    GRASSLAND:'GRASS', HEATH:'GRASS', SCRUBLAND:'GRASS', FOREST:'GRASS', DEFAULT:'GRASS',
+    DIRT:'DIRT', SAND:'DIRT', FARMLAND:'DIRT', FIELD:'DIRT', PLOWED:'DIRT',
+    PLOWED_FIELD:'DIRT', TILLED:'DIRT', FALLOW:'DIRT', STUBBLE:'DIRT',
+    WHEAT_FIELD:'DIRT', CROP:'DIRT', ORCHARD:'DIRT',
+    WATER:'WATER', WATERFRONT:'WATER',
+    STONE:'STONE', COBBLESTONE:'STONE', PAVED:'STONE',
+    MARSH:'MARSH', SWAMP:'MARSH',
+  };
+
+  let TERRAIN_TEXTURES = {
     // ── Grass family ─────────────────────────────────────────────────────────
     GRASS:             _TEX.GRASS,
     MEADOW:            _TEX.GRASS,
@@ -1402,7 +1415,7 @@
           { world: { cavrilWallGate: true } }
         );
         gd.sort = 350; gd.z = 350;
-        gd.fillType = 2; gd.texture = _TEX.STONE;
+        if (_TEX.STONE) { gd.fillType = 2; gd.texture = _TEX.STONE; }
         gates.push(gd);
         // Gate shadow — same footprint shifted by shadow vector, below walls at sort 149
         { const { sx: _gsx, sy: _gsy } = getShadowVec(hour);
@@ -1471,7 +1484,7 @@
               { world: { cavrilWallGate: true, cavrilVertexGate: true } }
             );
             gd.sort = 350; gd.z = 350;
-            gd.fillType = 2; gd.texture = _TEX.STONE;
+            if (_TEX.STONE) { gd.fillType = 2; gd.texture = _TEX.STONE; }
             gates.push(gd);
             // Gate shadow — vertex-snap variant, same shadow logic
             { const { sx: _gsx, sy: _gsy } = getShadowVec(hour);
@@ -1557,7 +1570,7 @@
           { world: { cavrilAquaduct: true } }
         );
         ad.sort = 350; ad.z = 350;
-        ad.fillType = 2; ad.texture = _TEX.ROOF;
+        if (_TEX.ROOF) { ad.fillType = 2; ad.texture = _TEX.ROOF; }
         aquaducts.push(ad);
       }
     }
@@ -1614,7 +1627,7 @@
         { world: { cavrilWallTower: true } }
       );
       td.sort = 350; td.z = 350;
-      td.fillType = 2; td.texture = _TEX.ROOF;
+      if (_TEX.ROOF) { td.fillType = 2; td.texture = _TEX.ROOF; }
       towers.push(td);
 
       // Tower shadow — shifted polygon at low opacity (0.20 keeps junction overlaps clean).
@@ -3243,8 +3256,7 @@
         null, 0, 0,
         { world: { cavrilTerrain: true, terrainType: 'GRASS', cavrilBaseLayer: true } }
       );
-      _bgDraw.fillType = 2;
-      _bgDraw.texture  = _TEX.GRASS;
+      if (_TEX.GRASS) { _bgDraw.fillType = 2; _bgDraw.texture = _TEX.GRASS; }
       _bgDraw.sort   = -10;
       _bgDraw.z      = -10;
       _bgDraw.locked = true;
@@ -3334,7 +3346,7 @@
           );
           waterD.sort   = 18; waterD.z = 18;
           waterD.locked = true;
-          waterD.fillType = 2; waterD.texture = _TEX.WATER;
+          if (_TEX.WATER) { waterD.fillType = 2; waterD.texture = _TEX.WATER; }
           terrainDrawings.push(waterD);
           continue;
         }
@@ -3386,7 +3398,7 @@
         // and shouldn't be interactively editable after import.
         _baseDrawing.locked = true;
         const _texSrc = TERRAIN_TEXTURES[bt] || _TEX.GRASS;
-        _baseDrawing.fillType = 2; _baseDrawing.texture = _texSrc;
+        if (_texSrc) { _baseDrawing.fillType = 2; _baseDrawing.texture = _texSrc; }
         terrainDrawings.push(_baseDrawing);
 
         // ── Forest shadow: shifted polygon cast on adjacent terrain ──────────
@@ -3472,7 +3484,7 @@
           { world: { cavrilTerrain: true, terrainType: 'WATER' } }
         );
         waterD2.sort = 18; waterD2.z = 18; waterD2.locked = true;
-        waterD2.fillType = 2; waterD2.texture = _TEX.WATER;
+        if (_TEX.WATER) { waterD2.fillType = 2; waterD2.texture = _TEX.WATER; }
         terrainDrawings.push(waterD2);
       }
 
@@ -3607,7 +3619,7 @@
         );
         bd.sort = 200;
         bd.z    = 200;
-        bd.fillType = 2; bd.texture = _TEX.ROOF;  // roof tile texture tinted by building palette
+        if (_TEX.ROOF) { bd.fillType = 2; bd.texture = _TEX.ROOF; }  // roof tile texture tinted by building palette
         bldgDrawings.push(bd);
       }
 
@@ -3815,6 +3827,11 @@
     return { month, day: (days % 30) + 1, hour };
   }
 
+  // Ensure the public API object exists before any property is assigned to it.
+  // cavril-cityhud.js initialises this inside its `ready` hook, which fires
+  // after script evaluation — so we can't rely on it being set already here.
+  window.CavrilTools = window.CavrilTools || {};
+
   /**
    * Debug helper — run in Foundry console to diagnose season/calendar detection.
    * Usage: CavrilTools.debugCalendar()
@@ -3875,24 +3892,24 @@
   }
 
   function _getSubSeason(month) {
+    // Terrace calendar: spring starts month 1 (New Spring → High Spring → Late Spring),
+    // summer months 4-6, fall 7-9, winter 10-12.
     const m = ((month - 1 + 12) % 12) + 1;
-    if (m ===  3) return 'EARLY_SPRING';
-    if (m ===  4) return 'MID_SPRING';
-    if (m ===  5) return 'LATE_SPRING';
-    if (m ===  6) return 'EARLY_SUMMER';
-    if (m ===  7) return 'MID_SUMMER';
-    if (m ===  8) return 'LATE_SUMMER';
-    if (m ===  9) return 'EARLY_AUTUMN';
-    if (m === 10) return 'MID_AUTUMN';
-    if (m === 11) return 'LATE_AUTUMN';
-    if (m === 12) return 'EARLY_WINTER';
-    if (m ===  1) return 'MID_WINTER';
+    if (m ===  1) return 'EARLY_SPRING';
+    if (m ===  2) return 'MID_SPRING';
+    if (m ===  3) return 'LATE_SPRING';
+    if (m ===  4) return 'EARLY_SUMMER';
+    if (m ===  5) return 'MID_SUMMER';
+    if (m ===  6) return 'LATE_SUMMER';
+    if (m ===  7) return 'EARLY_AUTUMN';
+    if (m ===  8) return 'MID_AUTUMN';
+    if (m ===  9) return 'LATE_AUTUMN';
+    if (m === 10) return 'EARLY_WINTER';
+    if (m === 11) return 'MID_WINTER';
     return 'LATE_WINTER';
   }
 
   // ─── PUBLIC API ───────────────────────────────────────────────────────────────
-
-  window.CavrilTools = window.CavrilTools || {};
 
   /** Open the city import dialog. */
   window.CavrilTools.importCity = function () {
@@ -4381,6 +4398,28 @@
     return scene.getFlag('world', 'roadGraph') || null;
   };
 
+  // Reads the 7 terrain texture settings and updates _TEX + TERRAIN_TEXTURES in place.
+  // Called once on ready and again whenever a cavril-cityhud.tex* setting changes.
+  function _rebuildTexPaths() {
+    const _s = (k) => {
+      try { const v = game.settings.get('cavril-cityhud', k); return v?.trim() || ''; }
+      catch (_) { return ''; }
+    };
+    // Route every terrain/roof texture through the Forge resolver — exactly like the tree assets.
+    // Without this a relative "modules/cavril-cityhud/Assets/roof_bw.jpg" 404s on The Forge (the
+    // files live in the user's asset library, and drawing-fill textures aren't auto-rewritten).
+    _TEX.GRASS  = _resolveAssetBase(_s('texGrass'));
+    _TEX.DIRT   = _resolveAssetBase(_s('texDirt'));
+    _TEX.WATER  = _resolveAssetBase(_s('texWater'));
+    _TEX.FOREST = _resolveAssetBase(_s('texForest')) || _TEX.GRASS;
+    _TEX.STONE  = _resolveAssetBase(_s('texStone'));
+    _TEX.MARSH  = _resolveAssetBase(_s('texMarsh'));
+    _TEX.ROOF   = _resolveAssetBase(_s('texRoof'));
+    for (const [k, bucket] of Object.entries(_TEX_BUCKET)) {
+      TERRAIN_TEXTURES[k] = _TEX[bucket];
+    }
+  }
+
   // Read the configured asset base path once settings are available, then rebuild
   // tree canopy + trunk paths. This is the mechanism that lets Forge users point
   // to their Forge asset library folder instead of the bundled module path.
@@ -4395,6 +4434,7 @@
         console.log('[CavrilImport] Asset base overridden by module setting:', ASSET_BASE);
       }
     } catch (_) {}
+    _rebuildTexPaths();
   });
 
   // Live-update tree asset paths when the setting is changed mid-session
@@ -4405,6 +4445,9 @@
       const rebuilt = _buildTreeAssets(ASSET_BASE);
       TREE_CANOPY       = rebuilt.canopy;
       TREE_TRUNK_ASSETS = rebuilt.trunk;
+    }
+    if (setting.key?.startsWith('cavril-cityhud.tex')) {
+      _rebuildTexPaths();
     }
   });
 
