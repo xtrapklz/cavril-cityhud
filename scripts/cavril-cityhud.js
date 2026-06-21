@@ -15166,6 +15166,28 @@ const __cityhudInit = () => {
       back.innerHTML = `<i class="fas fa-arrow-left" style="font-size:0.85em;"></i><span>Back</span>`;
       back.addEventListener("click", () => { if (this.onBack) this.onBack(); });
       backRow.appendChild(back);
+
+      // === Dresser pills (CZEPEKU interior) — Dress assigns interior map + establishing art + Maestro
+      //     ambience; Enter stages the interior battlemap via Cavril: Wayfarer; Ambience plays its bed. ===
+      try {
+        const _DR = window.CavrilCityHUD?.Dresser;
+        if (_DR && game.user?.isGM) {
+          const mkPill = (icon, label, title, fn) => {
+            const p = document.createElement("span");
+            p.setAttribute("role", "button"); p.setAttribute("tabindex", "0"); p.title = title;
+            p.style.cssText = `display:inline-flex; align-items:center; gap:5px; padding:4px 10px; background:rgba(0,0,0,0.20); border:1px solid #3f3f46; border-radius:999px; cursor:pointer; color:#a1a1aa; font-size:0.82em;`;
+            p.innerHTML = `<i class="fas ${icon}" style="font-size:0.85em;"></i><span>${label}</span>`;
+            p.addEventListener("mouseenter", () => { p.style.borderColor = "#7bd88f"; p.style.color = "#d4d4d8"; });
+            p.addEventListener("mouseleave", () => { p.style.borderColor = "#3f3f46"; p.style.color = "#a1a1aa"; });
+            p.addEventListener("click", async () => { try { await fn(); } catch (e) { console.warn("[Dresser]", e); } });
+            return p;
+          };
+          const spacer = document.createElement("span"); spacer.style.cssText = "margin-left:auto;"; backRow.appendChild(spacer);
+          backRow.appendChild(mkPill("fa-wand-magic-sparkles", "Dress", "Assign a CZEPEKU interior map + establishing art + Maestro ambience to this building", () => _DR.dressBuilding(b.id)));
+          backRow.appendChild(mkPill("fa-door-open", "Enter", "Stage this building's interior battlemap (run Dress first to assign one)", () => _DR.stageInterior(b.id)));
+          backRow.appendChild(mkPill("fa-music", "Ambience", "Play this building's ambience through Cavril: Maestro", () => _DR.playAmbience(b.id)));
+        }
+      } catch (e) { console.warn("[Dresser] inspector pills:", e); }
       scroller.appendChild(backRow);
 
       // === Header: image + name + type badge ===
@@ -27453,6 +27475,151 @@ const __cityhudInit = () => {
     }
     return { spawned: citizenIds.size };
   };
+  // ── Location Dresser ─────────────────────────────────────────────────────────────────────────────
+  // Per-building CZEPEKU interior. Assigns each building a type-matched interior battlemap (czMapKey —
+  // staged on demand via Cavril: Wayfarer's stageMapByKey), an establishing scene image (img), and a
+  // Cavril: Maestro ambience (czSound). REUSES EncounterStage's catalog + stager — no duplicate CZEPEKU
+  // adapter here. Additive: nothing in this block touches the existing render/store paths. GM only.
+  const Dresser = (() => {
+    const log  = (...a) => console.log("%c[Dresser]", "color:#7bd88f;font-weight:bold", ...a);
+    const warn = (...a) => console.warn("[Dresser]", ...a);
+    const CAND = 10;                        // weighted-random among the top-N tag matches → variety per building
+    const SCENE_DIR = "czepeku/locations";  // where establishing images land
+    // building type → CZEPEKU scene-image tags / interior-map tags / Maestro ambience { ss, arr(+Day/Night if dn), ch, dn }.
+    const TYPE = {
+      TAVERN:          { scene: ["tavern","inn","interior","pub","building"],        map: ["tavern","inn","interior"],     snd: { ss: "emberEnvironment", arr: "ordainInterior", ch: "environment", dn: true } },
+      INN:             { scene: ["inn","tavern","interior","bedroom","building"],     map: ["inn","tavern","interior"],     snd: { ss: "emberEnvironment", arr: "ordainInterior", ch: "environment", dn: true } },
+      SHOP:            { scene: ["shop","market","interior","store","building"],      map: ["shop","market","interior"],    snd: { ss: "emberEnvironment", arr: "helkas",         ch: "environment", dn: true } },
+      MARKET:          { scene: ["market","festivity","courtyard","street","fair"],   map: ["market","courtyard"],          snd: { ss: "emberEnvironment", arr: "helkasFestival", ch: "environment", dn: false } },
+      RELIGIOUS:       { scene: ["temple","shrine","altar","interior","church"],      map: ["temple","shrine","church"],    snd: { ss: "emberEnvironment", arr: "ordainTemple",   ch: "environment", dn: false } },
+      RESIDENCE:       { scene: ["building","interior","bedroom","house","home"],     map: ["building","house","interior"], snd: { ss: "emberEnvironment", arr: "ordainInterior", ch: "environment", dn: true } },
+      EDUCATIONAL:     { scene: ["library","study","interior","building","scroll"],   map: ["library","study"],             snd: { ss: "emberEnvironment", arr: "bleakArchive",   ch: "environment", dn: false } },
+      INDUSTRIAL:      { scene: ["forge","industrial","workshop","interior","mine"],  map: ["forge","industrial","mine"],   snd: { ss: "emberEnvironment", arr: "scrapyard",      ch: "environment", dn: false } },
+      ARTISAN:         { scene: ["forge","workshop","shop","interior","craft"],       map: ["forge","workshop","shop"],     snd: { ss: "emberEnvironment", arr: "scrapyard",      ch: "environment", dn: false } },
+      FARM:            { scene: ["farm","field","barn","grass","clearing"],           map: ["farm","field","barn"],         snd: { ss: "emberEnvironment", arr: "redrakFields",   ch: "environment", dn: true } },
+      WAREHOUSE:       { scene: ["warehouse","docks","storage","interior","crate"],   map: ["warehouse","docks"],           snd: { ss: "emberEnvironment", arr: "ordainDocks",    ch: "environment", dn: true } },
+      LAW_ENFORCEMENT: { scene: ["court","prison","barracks","gate","interior"],      map: ["prison","barracks","court"],   snd: { ss: "emberEnvironment", arr: "ordainInterior", ch: "environment", dn: true } },
+      FACTION:         { scene: ["court","courtyard","hall","interior","throne"],     map: ["court","hall","throne"],       snd: { ss: "marlstoneGala",    arr: "marlstoneGala", ch: "music",       dn: false } },
+      SERVICE:         { scene: ["building","shop","interior","street","urban"],      map: ["building","shop","interior"],  snd: { ss: "emberEnvironment", arr: "helkas",         ch: "environment", dn: true } },
+      _default:        { scene: ["building","interior","street"],                     map: ["building","interior"],         snd: { ss: "emberEnvironment", arr: "ordainInterior", ch: "environment", dn: true } },
+    };
+    const isNight = () => { const h = Math.floor((((game.time?.worldTime ?? 0) / 3600) % 24 + 24) % 24); return (h < 6 || h >= 19); };
+    const arrFor  = (snd) => snd.dn ? `${snd.arr}${isNight() ? "Night" : "Day"}` : snd.arr;
+    const ES    = () => globalThis.CavrilEncounterStage || null;
+    const store = () => window.CavrilCityHUD?.app?.store ?? null;
+    const btype = (b) => String(b?.buildingType ?? b?.type ?? "_default").toUpperCase().replace(/\s+/g, "_");
+    function getBuilding(idOrName) {
+      if (idOrName && typeof idOrName === "object") return idOrName;
+      const s = store(); if (!s) return null;
+      const bs = s.getBuildings?.() ?? []; if (idOrName == null) return null;
+      let b = bs.find(x => String(x.id) === String(idOrName));
+      if (!b) b = bs.find(x => String(x.name ?? "").toLowerCase() === String(idOrName).toLowerCase());
+      if (!b) b = bs.find(x => String(x.name ?? "").toLowerCase().includes(String(idOrName).toLowerCase()));
+      return b ?? null;
+    }
+    const itemTags = (it) => [...new Set((it.variants ?? []).flatMap(v => v.tags ?? []))].map(t => String(t).toLowerCase());
+    function pickByTags(items, tags) {   // weighted-random among the top tag matches → variety per building
+      const want = new Set(tags.map(t => String(t).toLowerCase()));
+      const scored = items.map(it => ({ it, score: itemTags(it).reduce((s, t) => s + (want.has(t) ? 1 : 0), 0) }))
+        .filter(x => x.score > 0).sort((a, b) => b.score - a.score);
+      if (!scored.length) return null;
+      const pool = scored.slice(0, CAND); if (pool.length === 1) return pool[0].it;
+      const total = pool.reduce((s, c) => s + c.score, 0); let r = Math.random() * total;
+      for (const c of pool) { if ((r -= c.score) < 0) return c.it; }
+      return pool[pool.length - 1].it;
+    }
+    function bestVariant(it, tags) {      // pick the interior variant that best matches (prefer day/original/natural)
+      const want = new Set(tags.map(t => String(t).toLowerCase())); const vs = it.variants ?? [];
+      if (vs.length <= 1) return vs[0] ?? null;
+      return vs.map(v => ({ v, s: (v.tags ?? []).reduce((s, t) => s + (want.has(String(t).toLowerCase()) ? 1 : 0), 0) + (/\b(day|original|natural)\b/i.test(v.name) ? 0.5 : 0) }))
+        .sort((a, b) => b.s - a.s)[0].v;
+    }
+    // Self-contained CZEPEKU establishing-image download — header-less path auth, Forge-aware.
+    async function downloadImage(variantId, basename) {
+      const sid = game.settings.get("czepeku", "sessionId"); if (!sid) throw new Error("CZEPEKU not connected");
+      const onForge = typeof ForgeVTT !== "undefined" && ForgeVTT.usingTheForge;
+      const SRC = onForge ? "forgevtt" : "data";
+      const FP  = foundry.applications?.apps?.FilePicker?.implementation ?? FilePicker;
+      let path = ""; for (const seg of SCENE_DIR.split("/")) { path += seg + "/"; try { await FP.createDirectory(SRC, path.slice(0, -1)); } catch (e) { /* exists */ } }
+      const r = await fetch(`https://www.czepeku.com/api/session/${sid}/fvtt/download?model=Map&id=${variantId}`);
+      if (!r.ok) throw new Error(`image download HTTP ${r.status}`);
+      const CT = { "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/avif": "avif" };
+      const ext = CT[(r.headers.get("content-type") || "").split(";")[0].trim()] || "webp";
+      const file = `${basename}.${ext}`;
+      const res = await FP.upload(SRC, SCENE_DIR, new File([await r.blob()], file));
+      return res?.path || `${SCENE_DIR}/${file}`;
+    }
+    async function planFor(b) {
+      const es = ES(); if (!es?.getCatalog) throw new Error("Cavril: Wayfarer (EncounterStage) not available — its CZEPEKU catalog is reused here.");
+      const spec = TYPE[btype(b)] || TYPE._default;
+      const items = (await es.getCatalog())?.items ?? [];
+      const scenes = items.filter(it => it.dataKey === "scenes" && it.genre === "fantasy");
+      const maps   = items.filter(it => it.dataKey === "maps"   && it.genre === "fantasy");
+      const sceneItem = pickByTags(scenes, spec.scene);
+      const mapItem   = pickByTags(maps, spec.map);
+      const mapVar    = mapItem ? bestVariant(mapItem, spec.map) : null;
+      return { b, type: btype(b), spec, sceneItem, mapItem, mapVar, sndId: `${spec.snd.ss}:${arrFor(spec.snd)}:${spec.snd.ch}` };
+    }
+    async function dressBuilding(idOrObj, { overwriteImg = false, play = false } = {}) {
+      if (!game.user?.isGM) return warn("GM only");
+      const s = store(); if (!s) { ui.notifications?.warn("Open the Cavril: Cities window first."); return null; }
+      const b = getBuilding(idOrObj); if (!b) { warn("building not found:", idOrObj); return null; }
+      let p; try { p = await planFor(b); } catch (e) { ui.notifications?.warn(e.message); return null; }
+      const muts = [];
+      if (p.sceneItem && (overwriteImg || !b.img)) {
+        try { const src = await downloadImage(p.sceneItem.variants[0].id, String(b.id)); muts.push({ kind: "text.set", buildingId: b.id, field: "img", value: src }); log(`✓ art → ${src}`); }
+        catch (e) { warn("scene art failed:", e.message); }
+      }
+      if (p.mapVar) muts.push({ kind: "text.set", buildingId: b.id, field: "czMapKey", value: p.mapVar.key });
+      muts.push({ kind: "text.set", buildingId: b.id, field: "czSound", value: p.sndId });
+      if (muts.length) { try { await s.commitBatch(muts); } catch (e) { warn("commit failed", e); } }
+      if (play) playAmbience(b);
+      ui.notifications?.info(`Dressed "${b.name}" (${p.type})${p.mapVar ? "" : " — no interior map matched"}.`);
+      return p;
+    }
+    async function dressAll({ confirm = false } = {}) {
+      const s = store(); if (!s) { ui.notifications?.warn("Open the Cavril: Cities window first."); return 0; }
+      const bs = s.getBuildings?.() ?? [];
+      if (!confirm) { ui.notifications?.warn(`Dress all ${bs.length} buildings? Re-run: CavrilCityHUD.Dresser.dressAll({confirm:true})`); return 0; }
+      let n = 0; for (const b of bs) { try { await dressBuilding(b); n++; } catch (e) { warn(b.name, e?.message || e); } }
+      ui.notifications?.info(`Location Dresser: dressed ${n}/${bs.length} buildings.`);
+      return n;
+    }
+    async function dressType(type, opts = {}) {
+      const s = store(); if (!s) { ui.notifications?.warn("Open the Cavril: Cities window first."); return 0; }
+      const T = String(type).toUpperCase().replace(/\s+/g, "_");
+      const bs = (s.getBuildings?.() ?? []).filter(b => btype(b) === T);
+      for (const b of bs) { try { await dressBuilding(b, opts); } catch (e) { warn(b.name, e?.message || e); } }
+      ui.notifications?.info(`Dressed ${bs.length} ${T} buildings.`);
+      return bs.length;
+    }
+    async function preview(idOrName) {
+      const s = store(); if (!s) { ui.notifications?.warn("Open the Cavril: Cities window first."); return null; }
+      if (idOrName != null) { const b = getBuilding(idOrName); if (!b) return warn("not found"); const p = await planFor(b); log(`${b.name} [${p.type}] → scene:${p.sceneItem?.name ?? "—"} · map:${p.mapItem?.name ?? "—"} · sound:${p.sndId}`); return p; }
+      const rows = []; for (const b of (s.getBuildings?.() ?? [])) { try { const p = await planFor(b); rows.push({ building: b.name, type: p.type, scene: p.sceneItem?.name ?? "—", map: p.mapItem?.name ?? "—", sound: p.sndId }); } catch (e) { break; } }
+      console.table(rows); return rows;
+    }
+    function playAmbience(idOrObj) {
+      const b = getBuilding(idOrObj); if (!b) return warn("building not found");
+      const M = globalThis.Maestro; if (!M?.play) return warn("Cavril: Maestro not available");
+      let ss, arr, ch; const raw = b.czSound;
+      if (raw) { [ss, arr, ch] = String(raw).split(":"); }
+      else { const spec = (TYPE[btype(b)] || TYPE._default).snd; ss = spec.ss; arr = arrFor(spec); ch = spec.ch; }
+      try { M.play(ss, { channel: ch || "environment", arrangementId: arr }); log(`▶ ${b.name}: ${ss}/${arr}`); }
+      catch (e) { warn("play failed", e); }
+    }
+    async function stageInterior(idOrObj, { activate = true } = {}) {
+      const b = getBuilding(idOrObj); if (!b) { warn("building not found"); return null; }
+      if (!b.czMapKey) { ui.notifications?.warn(`"${b.name}" has no interior assigned yet — dress it first.`); return null; }
+      const es = ES(); if (!es?.stageMapByKey) { ui.notifications?.warn("Cavril: Wayfarer not available for staging."); return null; }
+      const scene = await es.stageMapByKey(b.czMapKey, { title: `${b.name} (interior)`, activate });
+      if (scene) { playAmbience(b); ui.notifications?.info(`Entered "${b.name}".`); }
+      else ui.notifications?.warn(`Couldn't stage "${b.name}" interior (no authored CZEPEKU scene for that map).`);
+      return scene;
+    }
+    return { TYPE, getBuilding, preview, dressBuilding, dressAll, dressType, playAmbience, stageInterior };
+  })();
+
   window.CavrilCityHUD = {
     _installed: true,
     open() {
@@ -27503,6 +27670,7 @@ const __cityhudInit = () => {
     Placement,
     DetailLayer,
     Domain,
+    Dresser,   // per-building CZEPEKU interiors: dressBuilding/dressAll/dressType/preview/stageInterior/playAmbience
   };
 
   // ── CityHUD deep-link plumbing ──────────────────────────────────────
