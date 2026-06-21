@@ -27128,6 +27128,17 @@ const __cityhudInit = () => {
     });
   } catch (e) {}
 
+  // CityHUD → Cavril: Maestro — settlement soundscape (a Maestro reference, e.g. "amb:townMarket" or a
+  // soundscape id). Played when you're on an imported city scene; day/night follows the clock. Blank =
+  // day/night only (no specific town bed).
+  try {
+    game.settings.register("cavril-cityhud", "cityAmbience", {
+      name: "CityHUD: Settlement soundscape (Maestro)",
+      hint: "A Cavril: Maestro reference to play while you're in a city — e.g. a market/town ambience. Leave blank for day/night ambience only. No effect if Maestro isn't installed.",
+      scope: "world", config: true, type: String, default: "",
+    });
+  } catch (e) {}
+
   try {
     game.settings.register("cavril-cityhud", "portraitFolder", {
       name: "CityHUD: Portrait folder",
@@ -27449,6 +27460,19 @@ const __cityhudInit = () => {
       // the user clicks the toolbar button twice. Foundry's Application
       // base class makes this idempotent.
       app.render(true);
+      this._cityAudio();
+    },
+    // CityHUD → Cavril: Maestro — when on an imported city scene, play the configured settlement
+    // soundscape (+ keep day/night in step). Optional-chained: a no-op if Maestro isn't installed.
+    _cityAudio() {
+      try {
+        if (!game.user?.isGM) return;
+        const w = canvas?.scene?.flags?.world || {};
+        if (!(w.cavrilImport || w.cityJournalId)) return;   // only inside a CityHUD city
+        const ref = String(game.settings.get("cavril-cityhud", "cityAmbience") || "").trim();
+        if (ref) { try { globalThis.Maestro?.triggerRef?.(ref); } catch (e) {} }
+        try { globalThis.Maestro?.applyDayNight?.(); } catch (e) {}
+      } catch (e) { console.warn("[CityHUD] city audio:", e); }
     },
     close() {
       try { app.close(); } catch (e) {}
@@ -27576,6 +27600,7 @@ const __cityhudInit = () => {
         DL.updateCitizenPositions(),
         DL.hourlyCitizenSpawnCheck(),
       ]);
+      window.CavrilCityHUD?._cityAudio?.();   // keep the settlement's day/night ambience in step
     } catch (e) { console.warn("[CityHUD] updateWorldTime refresh:", e); }
   });
 
