@@ -6116,8 +6116,11 @@ const __cityhudInit = () => {
         // Remove old tint drawing(s)
         const oldTintIds = canvas.scene.drawings.contents
           .filter(d => d.flags?.world?.isDynamicTint).map(d => d.id);
-        if (oldTintIds.length)
-          await canvas.scene.deleteEmbeddedDocuments("Drawing", oldTintIds);
+        if (oldTintIds.length) {
+          // A concurrent time-advance (rapid travel/camp ticks) can delete the same tint first — swallow the
+          // "does not exist" race so the fresh tint below still gets created instead of aborting this pass.
+          try { await canvas.scene.deleteEmbeddedDocuments("Drawing", oldTintIds); } catch (e) { /* already removed */ }
+        }
 
         if (ta > 0.01) {
           const tintHex = "#" + [tr, tg, tb].map(v =>
